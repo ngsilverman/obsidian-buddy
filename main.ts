@@ -1,4 +1,5 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import OpenAI from "openai";
 
 // Remember to rename these classes and interfaces!
 
@@ -14,10 +15,6 @@ const sanitizeContent = (s: string): string => {
 	return s.replace(/^\s+|\s+$/g, "");
 };
 
-const sanitizeAssistantContent = (s: string): string => {
-	return sanitizeContent(s.replace(/^>\s?/gm, ""));
-};
-
 interface Message {
 	role: string;
 	content: string;
@@ -29,27 +26,25 @@ const gptMessages = (s: string): Message[] => {
 	let role: string | null = null;
 	let content: string | null = null;
 
+	const updateMessages = (): Message[] => {
+		if (content !== null) {
+			messages.push({ role: role!, content: sanitizeContent(content) });
+			role = null;
+			content = null;
+		}
+		return messages;
+	};
+
 	while (lines.length > 0) {
 		const line = lines.shift()!;
-		const updateMessages = (): Message[] => {
-			if (content !== null) {
-				const sanitizeF = role === "assistant" ? sanitizeAssistantContent : sanitizeContent;
-				messages.push({ role: role!, content: sanitizeF(content) });
-			}
-			return messages;
-		};
 
-		if (line.match(/^> \[!gpt-assistant\]/)) {
+		if (role !== "assistant" && line.match(/^```buddy\s/)) {
 			updateMessages();
 			role = "assistant";
-			content = null;
-		} else if (role === "assistant" && line.match(/^>/)) {
-			content = content ? `${content}\n${line}` : line;
-		} else if (role === null) {
-			role = "user";
-			content = line;
-		} else if (role === "assistant") {
+		} else if (role === "assistant" && line.match(/^```\s*$/)) {
 			updateMessages();
+			role = "user";
+		} else if (role === null) {
 			role = "user";
 			content = line;
 		} else {
@@ -58,11 +53,23 @@ const gptMessages = (s: string): Message[] => {
 	}
 
 	if (content !== null && role !== null) {
-		const sanitizeF = role === "assistant" ? sanitizeAssistantContent : sanitizeContent;
-		messages.push({ role: role, content: sanitizeF(content) });
+		if (role === "assistant") {
+			new Notice('Error: buddy code block has no end');
+			throw new Error("buddy code block has no end");
+		} else {
+			updateMessages();
+		}
 	}
 
 	return messages;
+};
+
+const messageToMd = (m: Message): string => {
+	if (m.role === "assistant") {
+		return `\n\`\`\`buddy\n${m.content}\n\`\`\``;
+	} else {
+		return `\n${m.content}`;
+	}
 };
 
 export default class BuddyPlugin extends Plugin {
@@ -71,21 +78,39 @@ export default class BuddyPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
+		// TODO: Check that an API key has been set.
+		const openai = new OpenAI({
+			apiKey: this.settings.openAIApiKey,
+			dangerouslyAllowBrowser: true,
+		});
+
 		this.addCommand({
 			id: 'buddy-chat',
 			name: 'Let\'s have a chat',
 			checkCallback: (checking: boolean) => {
-				// Conditions to check
 				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
 					if (!checking) {
-						console.log(markdownView.getViewData())
-						console.log(gptMessages(markdownView.getViewData()))
+						const messages = gptMessages(markdownView.getViewData());
+						console.log(messages)
+						openai.chat.completions.create({
+							messages: messages,
+							model: 'gpt-3.5-turbo',
+						}).then((completion) => {
+							const message = completion.choices[0].message;
+							const messageMd = messageToMd(message);
+							console.log(messageMd);
+
+							const editor = markdownView.editor;
+							const lastLine = editor.lineCount() - 1;
+							const lastCh = editor.getLine(lastLine).length;
+							const endPos = { line: lastLine, ch: lastCh };
+							console.log(endPos);
+
+							editor.replaceRange("\n" + messageMd, endPos);
+						});
 					}
 
-					// This command will only show up in Command Palette when the check function returns true
 					return true;
 				}
 			}
