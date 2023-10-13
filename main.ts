@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Editor, MarkdownRenderer, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import OpenAI from "openai";
 
 // Remember to rename these classes and interfaces!
@@ -78,6 +78,8 @@ export default class BuddyPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
+		this.addSettingTab(new BuddySettingTab(this.app, this));
+
 		// TODO: Check that an API key has been set.
 		const openai = new OpenAI({
 			apiKey: this.settings.openAIApiKey,
@@ -116,8 +118,16 @@ export default class BuddyPlugin extends Plugin {
 			}
 		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new BuddySettingTab(this.app, this));
+		this.registerMarkdownCodeBlockProcessor("buddy", (source, el, ctx) => {
+			const callout = el.createEl("div", { cls: "callout" });
+			const title = callout.createEl("div", { cls: "callout-title" });
+			// const icon = title.createEl("div", { cls: "callout-icon" })
+			// icon.createEl("svg" …)
+			title.createEl("div", { cls: "callout-title-inner", text: "Buddy" });
+
+			const content = callout.createEl("div", { cls: "callout-content" })
+			MarkdownRenderer.render(this.app, source, content, ctx.sourcePath, this)
+		});
 	}
 
 	onunload() {
