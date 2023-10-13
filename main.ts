@@ -1,4 +1,4 @@
-import { App, Editor, MarkdownRenderer, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, MarkdownRenderer, MarkdownView, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import OpenAI from "openai";
 
 // Remember to rename these classes and interfaces!
@@ -94,6 +94,16 @@ export default class BuddyPlugin extends Plugin {
 				if (markdownView) {
 					if (!checking) {
 						const messages = gptMessages(markdownView.getViewData());
+
+						const fileName = markdownView.file?.name;
+						const folder = markdownView.file?.parent?.path;
+						console.log(markdownView.file);
+						const systemPrompt =
+							`You are a friendly AI assistant integrated inside of an Obsidian Markdown note named "${fileName}" in folder "${folder}".` +
+							" User messages constitute the entire document, interspersed with your own responses." +
+							" Feel free to use Markdown in your responses or anything that is compatible with Obsidian or Obsidian plugins.";
+						messages.unshift({ role: "system", content: systemPrompt });
+
 						console.log(messages)
 						openai.chat.completions.create({
 							messages: messages,
