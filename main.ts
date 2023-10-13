@@ -10,6 +10,61 @@ const DEFAULT_SETTINGS: BuddySettings = {
 	openAIApiKey: ''
 }
 
+const sanitizeContent = (s: string): string => {
+	return s.replace(/^\s+|\s+$/g, "");
+};
+
+const sanitizeAssistantContent = (s: string): string => {
+	return sanitizeContent(s.replace(/^>\s?/gm, ""));
+};
+
+interface Message {
+	role: string;
+	content: string;
+}
+
+const gptMessages = (s: string): Message[] => {
+	const lines = s.split("\n");
+	let messages: Message[] = [];
+	let role: string | null = null;
+	let content: string | null = null;
+
+	while (lines.length > 0) {
+		const line = lines.shift()!;
+		const updateMessages = (): Message[] => {
+			if (content !== null) {
+				const sanitizeF = role === "assistant" ? sanitizeAssistantContent : sanitizeContent;
+				messages.push({ role: role!, content: sanitizeF(content) });
+			}
+			return messages;
+		};
+
+		if (line.match(/^> \[!gpt-assistant\]/)) {
+			updateMessages();
+			role = "assistant";
+			content = null;
+		} else if (role === "assistant" && line.match(/^>/)) {
+			content = content ? `${content}\n${line}` : line;
+		} else if (role === null) {
+			role = "user";
+			content = line;
+		} else if (role === "assistant") {
+			updateMessages();
+			role = "user";
+			content = line;
+		} else {
+			content = content ? `${content}\n${line}` : line;
+		}
+	}
+
+	if (content !== null && role !== null) {
+		const sanitizeF = role === "assistant" ? sanitizeAssistantContent : sanitizeContent;
+		messages.push({ role: role, content: sanitizeF(content) });
+	}
+
+	return messages;
+};
+
 export default class BuddyPlugin extends Plugin {
 	settings: BuddySettings;
 
@@ -17,8 +72,8 @@ export default class BuddyPlugin extends Plugin {
 		await this.loadSettings();
 
 		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
+			id: 'buddy-chat',
+			name: 'Let\'s have a chat',
 			checkCallback: (checking: boolean) => {
 				// Conditions to check
 				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -26,7 +81,8 @@ export default class BuddyPlugin extends Plugin {
 					// If checking is true, we're simply "checking" if the command can be run.
 					// If checking is false, then we want to actually perform the operation.
 					if (!checking) {
-						// TODO
+						console.log(markdownView.getViewData())
+						console.log(gptMessages(markdownView.getViewData()))
 					}
 
 					// This command will only show up in Command Palette when the check function returns true
