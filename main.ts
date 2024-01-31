@@ -28,9 +28,12 @@ const gptMessages = (s: string): Message[] => {
 
 	const updateMessages = (): Message[] => {
 		if (content !== null) {
-			messages.push({ role: role!, content: sanitizeContent(content) });
-			role = null;
-			content = null;
+			const sanitizedContent = sanitizeContent(content);
+			if (sanitizedContent) {
+				messages.push({ role: role!, content: sanitizedContent });
+				role = null;
+				content = null;
+			}
 		}
 		return messages;
 	};
@@ -38,7 +41,7 @@ const gptMessages = (s: string): Message[] => {
 	while (lines.length > 0) {
 		const line = lines.shift()!;
 
-		if (role !== "assistant" && line.match(/^```buddy\s/)) {
+		if (role !== "assistant" && line.match(/^```buddy\s*$/)) {
 			updateMessages();
 			role = "assistant";
 		} else if (role === "assistant" && line.match(/^```\s*$/)) {
