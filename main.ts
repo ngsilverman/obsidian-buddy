@@ -20,8 +20,8 @@ interface Message {
 	content: string;
 }
 
-const gptMessages = (s: string): Message[] => {
-	const lines = s.split("\n");
+const gptMessages = (md: string): Message[] => {
+	const lines = md.split("\n");
 	let messages: Message[] = [];
 	let role: string | null = null;
 	let content: string | null = null;
@@ -75,6 +75,26 @@ const messageToMd = (m: Message): string => {
 	}
 };
 
+function removeLines(s: string, start: number, end: number) {
+	const lines = s.split('\n');
+	console.log(lines)
+	lines.splice(start, end - start + 1);
+	console.log(lines)
+	return lines.join('\n');
+}
+
+function markdownViewToMd(view: MarkdownView, removeProps: boolean = false): string {
+	let md = view.getViewData();
+	if (removeProps) {
+		const cache = this.app.metadataCache.getFileCache(view.file!);
+		if (cache?.frontmatter) {
+			const { start, end } = cache.frontmatterPosition!;
+			md = removeLines(md, start.line, end.line);
+		}
+	}
+	return md;
+}
+
 export default class BuddyPlugin extends Plugin {
 	settings: BuddySettings;
 
@@ -96,7 +116,8 @@ export default class BuddyPlugin extends Plugin {
 				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (markdownView) {
 					if (!checking) {
-						const messages = gptMessages(markdownView.getViewData());
+						const md = markdownViewToMd(markdownView, true);
+						const messages = gptMessages(md);
 
 						const fileName = markdownView.file?.name;
 						const folder = markdownView.file?.parent?.path;
