@@ -20,6 +20,36 @@ interface Message {
 	content: string;
 }
 
+interface LinkedFile {
+	file: TFile;
+	/* 1 means it's a direct link, 2 means it's a second degree link (link from a direct link), etc. */
+	degree: number;
+}
+
+function groupBy(array: any[], key: any): Map<any, any> {
+	return array.reduce((result: Map<any, any>, currentValue) => {
+		const groupKey = currentValue[key];
+		if (!result.has(groupKey)) {
+			result.set(groupKey, []);
+		}
+		result.get(groupKey).push(currentValue);
+		return result;
+	}, new Map());
+}
+
+function getSnippet(fileContent: string, maxLength: number = 100): string {
+	let result = '';
+	const reverseLines = fileContent.trim().split("\n").reverse();
+	for (const line of reverseLines) {
+		if (line.length + result.length > maxLength) {
+			result = "[…]\n" + result;
+			break;
+		}
+		result = line + "\n" + result;
+	}
+	return result;
+}
+
 const gptMessages = (md: string): Message[] => {
 	const lines = md.split("\n");
 	let messages: Message[] = [];
@@ -152,32 +182,41 @@ export default class BuddyPlugin extends Plugin {
 		return { frontmatterLinks, links, backlinks };
 	}
 
-	private getLinkedFiles(file: TFile, depth: number = 1): TFile[] {
+	private getLinkedFiles(file: TFile, depth: number = 1, ignore: TFile[] = [], degree: number = 1): LinkedFile[] {
 		console.log('getLinkedFiles', file, depth);
 		if (depth < 1) return [];
 
+		// Don't include the file itself in the links.
+		ignore.push(file);
+
 		const cache = this.app.metadataCache;
 		const { frontmatterLinks, links, backlinks } = this.getLinks(file);
-		let files = frontmatterLinks.concat(links).concat(backlinks)
+		let files = (frontmatterLinks.concat(links).concat(backlinks)
 			.map(link => cache.getFirstLinkpathDest(link, file.path))
-			.filter(f => f != null) as TFile[];
-		// Remove duplicates
-		files = [...new Set(files)];
+			.filter(f => f != null) as TFile[])
+			.unique()
+			.filter(f => !ignore.includes(f));
+
+		// Avoid duplicates.
+		ignore = ignore.concat(files);
+
+		let linkedFiles = files.map(file => {
+			return { file, degree }
+		});
 
 		if (depth > 1) {
-			files = files.flatMap(f => [f, ...this.getLinkedFiles(f, depth - 1)])
+			linkedFiles = linkedFiles.flatMap(lf => [lf, ...this.getLinkedFiles(lf.file, depth - 1, ignore, degree + 1)])
 		}
 
-		// Remove duplicates, again
-		return [...new Set(files)];
+		return linkedFiles;
 	}
 
 	private chat(markdownView: MarkdownView) {
-		const file = markdownView.file!;
+		const activeFile = markdownView.file!;
 		const md = markdownViewToMd(markdownView, true);
 
-		const linkedFiles = this.getLinkedFiles(file, 2);
-		new FileSelectionModal(this.app, linkedFiles, selectedFiles => {
+		const linkedFiles = this.getLinkedFiles(activeFile, 2);
+		new FileSelectionModal(this.app, activeFile, linkedFiles, selectedFiles => {
 			console.log('selectedFiles', selectedFiles);
 		}).open();
 
@@ -237,14 +276,21 @@ class BuddySettingTab extends PluginSettingTab {
 
 class FileSelectionModal extends Modal {
 
-	private files: TFile[];
-	private onSubmit: (selectedFiles: TFile[]) => void;
+	private activeFile: TFile;
+	private linkedFiles: LinkedFile[];
+	private onSubmit: (selectedFiles: LinkedFile[]) => void;
 
-	private fileToggles: Map<TFile, ToggleComponent>;
+	private fileToggles: Map<LinkedFile, ToggleComponent>;
 
-	constructor(app: App, files: TFile[], onSubmit: (selectedFiles: TFile[]) => void) {
+	constructor(
+		app: App,
+		activeFile: TFile,
+		linkedFiles: LinkedFile[],
+		onSubmit: (selectedFiles: LinkedFile[]) => void
+	) {
 		super(app);
-		this.files = files;
+		this.activeFile = activeFile;
+		this.linkedFiles = linkedFiles;
 		this.onSubmit = onSubmit;
 	}
 
@@ -252,45 +298,56 @@ class FileSelectionModal extends Modal {
 		this.fileToggles = new Map();
 
 		const { contentEl } = this;
-		contentEl.createEl("h2", { text: "Related files to include" });
+		contentEl.addClass('buddy-modal');
 
-		this.addActions(contentEl);
+		// TODO What if it's not a text file?
 
-		for (const file of this.files) {
+		const activeFileEl = contentEl.createDiv();
+		this.app.vault.cachedRead(this.activeFile)
+			.then(content => {
+				MarkdownRenderer.render(
+					this.app,
+					"The content of the active file, _" + this.activeFile.basename + "_, will be"
+					+ " included at the end of the prompt. This is the last thing the AI will read"
+					+ " before generating a response:\n```\n" + getSnippet(content, 100) + "\n```",
+					activeFileEl,
+					this.activeFile.path,
+					// @ts-ignore
+					null
+				);
+			});
+
+		contentEl.createEl('p', { text: "Files from the local graph can also be included as additional context:" });
+
+		const fileGroups = groupBy(this.linkedFiles, "degree");
+
+		for (const [degree, files] of fileGroups) {
 			new Setting(contentEl)
-				.setName(file.basename)
-				.setTooltip(file.path)
-				.addToggle(toggle => {
-					this.fileToggles.set(file, toggle);
+				.setName(fileGroups.size > 1 ? `Degree ${degree}` : '')
+				.setClass("setting-item-heading")
+				.then(setting => {
+					const selectEl = setting.controlEl.createDiv({ text: "Select ", cls: "buddy-select-shortcut" });
+					selectEl.createEl("a", { text: "All" }, el => {
+						el.onClickEvent((_ev) => this.setToggleValues(true, lf => lf.degree === degree));
+					});
+					selectEl.appendText(" | ");
+					selectEl.createEl("a", { text: "None" }, el => {
+						el.onClickEvent((_ev) => this.setToggleValues(false, lf => lf.degree === degree));
+					});
+
 				});
+
+			for (const lf of files) {
+				new Setting(contentEl)
+					.setName(lf.file.basename)
+					.setTooltip(lf.file.path)
+					.addToggle(toggle => {
+						this.fileToggles.set(lf, toggle);
+					});
+			}
 		}
 
-		this.addActions(contentEl);
-	}
-
-	onClose() {
-		let { contentEl } = this;
-		contentEl.empty();
-	}
-
-	private addActions(contentEl: HTMLElement) {
 		new Setting(contentEl)
-			.addButton(button => button
-				.setButtonText("Select All")
-				.onClick(_e => {
-					for (const [_file, toggle] of this.fileToggles) {
-						toggle.setValue(true);
-					}
-				})
-			)
-			.addButton(button => button
-				.setButtonText("Select None")
-				.onClick(_e => {
-					for (const [_file, toggle] of this.fileToggles) {
-						toggle.setValue(false);
-					}
-				})
-			)
 			.addButton(button => button
 				.setCta()
 				.setButtonText("Submit")
@@ -302,5 +359,18 @@ class FileSelectionModal extends Modal {
 					this.onSubmit(selectedFiles);
 				})
 			);
+	}
+
+	onClose() {
+		let { contentEl } = this;
+		contentEl.empty();
+	}
+
+	private setToggleValues(value: boolean, predicate: (linkedFile: LinkedFile) => boolean) {
+		for (const [file, toggle] of this.fileToggles) {
+			if (predicate(file)) {
+				toggle.setValue(value);
+			}
+		}
 	}
 }

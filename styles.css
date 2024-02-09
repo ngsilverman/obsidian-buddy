@@ -1,8 +1,8 @@
-/*
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.buddy-modal .copy-code-button {
+	display: none;
+}
 
-If your plugin does not need CSS, delete this file.
-
-*/
+.buddy-select-shortcut {
+	font-weight: var(--font-normal);
+}
