@@ -1,5 +1,6 @@
 import { App, MarkdownRenderer, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, ToggleComponent } from 'obsidian';
 import OpenAI from "openai";
+import { ChatCompletionMessageParam } from 'openai/resources';
 
 // Remember to rename these classes and interfaces!
 
@@ -15,9 +16,7 @@ const sanitizeContent = (s: string): string => {
 	return s.replace(/^\s+|\s+$/g, "");
 };
 
-interface Message {
-	role: string;
-	content: string;
+interface Message extends ChatCompletionMessageParam {
 }
 
 interface LinkedFile {
@@ -126,13 +125,15 @@ function markdownViewToMd(view: MarkdownView, removeProps: boolean = false): str
 export default class BuddyPlugin extends Plugin {
 	settings: BuddySettings;
 
+	private openai: OpenAI;
+
 	async onload() {
 		await this.loadSettings();
 
 		this.addSettingTab(new BuddySettingTab(this.app, this));
 
 		// TODO: Check that an API key has been set.
-		const openai = new OpenAI({
+		this.openai = new OpenAI({
 			apiKey: this.settings.openAIApiKey,
 			dangerouslyAllowBrowser: true,
 		});
@@ -143,7 +144,7 @@ export default class BuddyPlugin extends Plugin {
 			checkCallback: (checking: boolean) => {
 				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
 				if (markdownView) {
-					if (!checking) this.chat(markdownView);
+					if (!checking) this.prechat(markdownView);
 					return true;
 				}
 			}
@@ -183,7 +184,6 @@ export default class BuddyPlugin extends Plugin {
 	}
 
 	private getLinkedFiles(file: TFile, depth: number = 1, ignore: TFile[] = [], degree: number = 1): LinkedFile[] {
-		console.log('getLinkedFiles', file, depth);
 		if (depth < 1) return [];
 
 		// Don't include the file itself in the links.
@@ -211,42 +211,49 @@ export default class BuddyPlugin extends Plugin {
 		return linkedFiles;
 	}
 
-	private chat(markdownView: MarkdownView) {
-		const activeFile = markdownView.file!;
-		const md = markdownViewToMd(markdownView, true);
+	private async generateSystemPrompt(selectedFiles: LinkedFile[]): Promise<string> {
+		let prompt = "Here are some files related to the user's request:\n";
+		for (const { file } of selectedFiles) {
+			prompt += "\n---FILE: " + file.name + "---\n" + await this.app.vault.cachedRead(file);
+		}
+		return prompt;
+	}
 
+	private prechat(markdownView: MarkdownView) {
+		const activeFile = markdownView.file!;
 		const linkedFiles = this.getLinkedFiles(activeFile, 2);
 		new FileSelectionModal(this.app, activeFile, linkedFiles, selectedFiles => {
-			console.log('selectedFiles', selectedFiles);
+			this.chat(markdownView, selectedFiles);
 		}).open();
+	}
 
+	private async chat(markdownView: MarkdownView, selectedFiles: LinkedFile[]) {
+		// TODO Include properties from the active file somehow
+		const md = markdownViewToMd(markdownView);
 		const messages = gptMessages(md);
 
-		const fileName = markdownView.file?.name;
-		const folder = markdownView.file?.parent?.path;
-		const systemPrompt =
-			`You are a friendly AI assistant integrated inside of an Obsidian Markdown note named "${fileName}" in folder "${folder}".` +
-			" User messages constitute the entire document, interspersed with your own responses." +
-			" Feel free to use Markdown in your responses or anything that is compatible with Obsidian or Obsidian plugins.";
-		messages.unshift({ role: "system", content: systemPrompt });
+		// const systemPrompt =
+			// `You are a friendly AI assistant integrated inside of an Obsidian Markdown note named "${fileName}" in folder "${folder}".` +
+			// " User messages constitute the entire document, interspersed with your own responses." +
+			// " Feel free to use Markdown in your responses or anything that is compatible with Obsidian or Obsidian plugins.";
+		messages.unshift({ role: "system", content: await this.generateSystemPrompt(selectedFiles) });
 
-		console.log(messages)
-		// openai.chat.completions.create({
-		// 	messages: messages,
-		// 	model: 'gpt-3.5-turbo',
-		// }).then((completion) => {
-		// 	const message = completion.choices[0].message;
-		// 	const messageMd = messageToMd(message);
-		// 	console.log(messageMd);
+		// TODO Add some kind of loading indicator
 
-		// 	const editor = markdownView.editor;
-		// 	const lastLine = editor.lineCount() - 1;
-		// 	const lastCh = editor.getLine(lastLine).length;
-		// 	const endPos = { line: lastLine, ch: lastCh };
-		// 	console.log(endPos);
+		this.openai.chat.completions.create({
+			messages: messages,
+			model: 'gpt-3.5-turbo',
+		}).then((completion) => {
+			const message = completion.choices[0].message;
+			const messageMd = messageToMd(message);
 
-		// 	editor.replaceRange("\n" + messageMd, endPos);
-		// });
+			const editor = markdownView.editor;
+			const lastLine = editor.lineCount() - 1;
+			const lastCh = editor.getLine(lastLine).length;
+			const endPos = { line: lastLine, ch: lastCh };
+
+			editor.replaceRange("\n" + messageMd, endPos);
+		});
 	}
 }
 
