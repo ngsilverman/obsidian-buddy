@@ -6,10 +6,12 @@ import { ChatCompletionMessageParam } from 'openai/resources';
 
 interface BuddySettings {
 	openAIApiKey: string;
+	fileInclusionPreferences: Map<string, boolean>;
 }
 
 const DEFAULT_SETTINGS: BuddySettings = {
-	openAIApiKey: ''
+	openAIApiKey: '',
+	fileInclusionPreferences: new Map()
 }
 
 const sanitizeContent = (s: string): string => {
@@ -222,7 +224,7 @@ export default class BuddyPlugin extends Plugin {
 	private prechat(markdownView: MarkdownView) {
 		const activeFile = markdownView.file!;
 		const linkedFiles = this.getLinkedFiles(activeFile, 2);
-		new FileSelectionModal(this.app, activeFile, linkedFiles, selectedFiles => {
+		new FileSelectionModal(this, activeFile, linkedFiles, selectedFiles => {
 			this.chat(markdownView, selectedFiles);
 		}).open();
 	}
@@ -283,6 +285,7 @@ class BuddySettingTab extends PluginSettingTab {
 
 class FileSelectionModal extends Modal {
 
+	private plugin: BuddyPlugin;
 	private activeFile: TFile;
 	private linkedFiles: LinkedFile[];
 	private onSubmit: (selectedFiles: LinkedFile[]) => void;
@@ -290,12 +293,13 @@ class FileSelectionModal extends Modal {
 	private fileToggles: Map<LinkedFile, ToggleComponent>;
 
 	constructor(
-		app: App,
+		plugin: BuddyPlugin,
 		activeFile: TFile,
 		linkedFiles: LinkedFile[],
 		onSubmit: (selectedFiles: LinkedFile[]) => void
 	) {
-		super(app);
+		super(plugin.app);
+		this.plugin = plugin;
 		this.activeFile = activeFile;
 		this.linkedFiles = linkedFiles;
 		this.onSubmit = onSubmit;
@@ -326,7 +330,7 @@ class FileSelectionModal extends Modal {
 
 		contentEl.createEl('p', { text: "Files from the local graph can also be included as additional context:" });
 
-		const fileGroups = groupBy(this.linkedFiles, "degree");
+		const fileGroups: Map<number, LinkedFile[]> = groupBy(this.linkedFiles, "degree");
 
 		for (const [degree, files] of fileGroups) {
 			new Setting(contentEl)
@@ -341,7 +345,6 @@ class FileSelectionModal extends Modal {
 					selectEl.createEl("a", { text: "None" }, el => {
 						el.onClickEvent((_ev) => this.setToggleValues(false, lf => lf.degree === degree));
 					});
-
 				});
 
 			for (const lf of files) {
@@ -349,6 +352,9 @@ class FileSelectionModal extends Modal {
 					.setName(lf.file.basename)
 					.setTooltip(lf.file.path)
 					.addToggle(toggle => {
+						const pref = this.plugin.settings.fileInclusionPreferences.get(lf.file.path);
+						if (pref) toggle.setValue(pref)
+
 						this.fileToggles.set(lf, toggle);
 					});
 			}
@@ -360,9 +366,22 @@ class FileSelectionModal extends Modal {
 				.setButtonText("Submit")
 				.onClick(_e => {
 					this.close();
-					const selectedFiles = [...this.fileToggles]
-						.filter(([_file, toggle]) => toggle.getValue())
-						.map(([file, _toggle]) => file);
+
+					let selectedFiles: LinkedFile[] = [];
+					let unselectedFiles: LinkedFile[] = [];
+					this.fileToggles.forEach((toggle, lf) => {
+						(toggle.getValue() ? selectedFiles : unselectedFiles).push(lf);
+					});
+
+					// Update settings
+					for (const { file } of selectedFiles) {
+						this.plugin.settings.fileInclusionPreferences.set(file.path, true);
+					}
+					for (const { file } of unselectedFiles) {
+						this.plugin.settings.fileInclusionPreferences.set(file.path, false);
+					}
+					this.plugin.saveSettings();
+
 					this.onSubmit(selectedFiles);
 				})
 			);
